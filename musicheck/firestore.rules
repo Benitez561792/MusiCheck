@@ -1,0 +1,74 @@
+rules_version = '2';
+
+// Regras de segurança do MusiCheck.
+// - Aluno: cria o próprio perfil e os próprios check-ins; lê só o que é dele.
+// - Dono: lê tudo e cadastra as escolas (unidades) e os professores.
+// - Ninguém altera o próprio "role" pelo app (o dono é definido no Console do Firebase).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'dono';
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isOwner());
+      // Todo cadastro feito pelo app nasce como aluno
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['name', 'email', 'role', 'createdAt'])
+        && request.resource.data.role == 'aluno'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2;
+      allow update, delete: if false;
+    }
+
+    match /escolas/{schoolId} {
+      allow read: if signedIn();
+      allow create, update: if isOwner()
+        && request.resource.data.keys().hasOnly(['name', 'address', 'latitude', 'longitude', 'radiusMeters'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.address is string
+        && request.resource.data.latitude is number
+        && request.resource.data.longitude is number
+        && request.resource.data.radiusMeters is int
+        && request.resource.data.radiusMeters >= 20
+        && request.resource.data.radiusMeters <= 2000;
+      allow delete: if false;
+    }
+
+    match /professores/{teacherId} {
+      allow read: if signedIn();
+      allow create, update: if isOwner()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.active is bool;
+      allow delete: if false;
+    }
+
+    match /checkins/{checkinId} {
+      // get: o ID começa com o uid do aluno ({uid}_{data}); list: filtrando pelo próprio studentId
+      allow get: if signedIn() && (checkinId.matches(request.auth.uid + '_.*') || isOwner());
+      allow list: if signedIn() && (resource.data.studentId == request.auth.uid || isOwner());
+
+      // O aluno só cria o próprio check-in, com o ID {uid}_{data}, numa escola e com um professor existentes
+      allow create: if signedIn()
+        && request.resource.data.studentId == request.auth.uid
+        && checkinId == request.auth.uid + '_' + request.resource.data.date
+        && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.week.matches('^[0-9]{4}-W[0-9]{2}$')
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/escolas/$(request.resource.data.schoolId))
+        && exists(/databases/$(database)/documents/professores/$(request.resource.data.teacherId));
+
+      // Check-in não é editado nem apagado pelo app
+      allow update, delete: if false;
+    }
+  }
+}
